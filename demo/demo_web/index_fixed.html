@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>用户中心优化项目周报</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background-color: #f5f5f5;
+        }
+        
+        .card { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-left: 4px solid #8b5cf6; }
+        .section { border-bottom: 1px solid #e5e7eb; }
+        .section:last-child { border-bottom: none; }
+        .timeline-item { border-left: 2px solid #8b5cf6; padding-left: 1.5rem; position: relative; }
+        .timeline-item::before { content: ''; position: absolute; left: -5px; top: 0; width: 8px; height: 8px; background: #8b5cf6; border-radius: 50%; }
+        .cta { background: #8b5cf6; color: white; padding: 0.75rem 1.5rem; border-radius: 8px; font-weight: 500; }
+        
+        
+        .fade-in { opacity: 0; transform: translateY(20px); transition: opacity 0.4s ease-out, transform 0.4s ease-out; }
+        .fade-in.visible { opacity: 1; transform: translateY(0); }
+        .stagger-item { opacity: 0; transform: translateX(-10px); transition: opacity 0.3s ease-out, transform 0.3s ease-out; }
+        .stagger-item.visible { opacity: 1; transform: translateX(0); }
+        .card-hover { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+        .card-hover:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.15); }
+        
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+    <div class="max-w-4xl mx-auto">
+        <div class="card p-6 md:p-8">
+            <h1 class="text-3xl md:text-4xl font-bold mb-8 text-center text-purple-600">用户中心优化项目周报</h1>
+            <div id="content">
+            <div class="conclusion-banner" style="background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%); color: white; padding: 1.5rem; border-radius: 8px; margin-bottom: 2rem;">
+                <h2 style="margin: 0 0 0.5rem 0; font-size: 1.25rem;">结论</h2>
+                <p style="margin: 0;">建议立即推进本方案</p>
+                <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(255,255,255,0.2); border-radius: 4px;">
+                    <strong>CTA:</strong> 是否批准资源投入？
+                </div>
+            </div>
+            </div>
+        </div>
+    </div>
+    <script src="render.js"></script>
+</body>
+</html>
