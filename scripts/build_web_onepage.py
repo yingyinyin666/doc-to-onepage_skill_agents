@@ -46,6 +46,17 @@ def md_to_html(text):
             result.append(_render_table(rows))
             continue
 
+        # 独立图片行：![alt](src)
+        img_match = re.match(r'^!\[([^\]]*)\]\(([^)]+)\)\s*$', stripped)
+        if img_match:
+            result.append(close_lists())
+            alt = html_lib.escape(img_match.group(1))
+            src = html_lib.escape(img_match.group(2))
+            caption = f'<figcaption>{alt}</figcaption>' if alt else ''
+            result.append(f'<figure class="op-figure"><img src="{src}" alt="{alt}" loading="lazy" />{caption}</figure>')
+            i += 1
+            continue
+
         ol_match = re.match(r'^(\d+)\.\s+(.*)', stripped)
         if ol_match:
             if not in_ol:
@@ -81,6 +92,8 @@ def md_to_html(text):
 
 def _inline(text):
     text = html_lib.escape(text)
+    # 图片语法 ![alt](src) — 内联时渲染为 img 标签
+    text = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', r'<img src="\2" alt="\1" class="inline-img" />', text)
     text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
     text = re.sub(r'\*(.*?)\*', r'<em>\1</em>', text)
     text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
@@ -1120,6 +1133,41 @@ ul.op-list li::before {
 }
 .op-list li::marker { color:var(--text-muted);font-weight:700; }
 
+/* ── 图片 ── */
+.op-figure {
+  margin:1rem 0;
+  text-align:center;
+}
+.op-figure img {
+  max-width:100%;
+  border-radius:12px;
+  box-shadow:0 4px 20px rgba(0,0,0,0.1);
+  transition:transform 0.3s ease;
+  cursor:zoom-in;
+}
+.op-figure img:hover {
+  transform:scale(1.02);
+}
+.op-figure figcaption {
+  margin-top:0.5rem;
+  font-size:0.82rem;
+  color:var(--text-muted);
+  font-style:italic;
+}
+.inline-img {
+  max-width:100%;
+  border-radius:8px;
+  margin:0.5rem 0;
+  box-shadow:0 2px 12px rgba(0,0,0,0.08);
+}
+[data-style="dark"] .op-figure img {
+  box-shadow:0 4px 24px rgba(0,0,0,0.4);
+}
+[data-style="corporate"] .op-figure img {
+  border:1px solid rgba(0,0,0,0.08);
+  box-shadow:0 2px 12px rgba(0,0,0,0.06);
+}
+
 /* ── Inline ── */
 code {
   background:rgba(99,102,241,0.1);padding:0.12em 0.45em;border-radius:5px;
@@ -1569,9 +1617,34 @@ document.addEventListener('DOMContentLoaded',function(){
 '''
 
 
+# ─────────── 图片 base64 内嵌 ───────────
+
+def _embed_images_as_base64(html_content, base_dir):
+    """将 HTML 中的本地图片路径替换为 base64 data URI，使 HTML 完全自包含"""
+    import base64
+    import mimetypes
+
+    def replace_src(m):
+        src = m.group(1)
+        # 跳过已经是 data URI 或远程 URL 的图片
+        if src.startswith('data:') or src.startswith('http://') or src.startswith('https://'):
+            return m.group(0)
+        img_path = os.path.join(base_dir, src)
+        if not os.path.exists(img_path):
+            return m.group(0)
+        mime, _ = mimetypes.guess_type(img_path)
+        if not mime:
+            mime = 'image/png'
+        with open(img_path, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode('ascii')
+        return f'src="data:{mime};base64,{b64}"'
+
+    return re.sub(r'src="([^"]+)"', replace_src, html_content)
+
+
 # ─────────── 主入口 ───────────
 
-def main(data, outdir, theme='light', style='dark', animation='default'):
+def main(data, outdir, theme='light', style='dark', animation='default', embed_images=True):
     if not os.path.exists(data):
         raise FileNotFoundError(f"Data file {data} not found")
 
@@ -1586,6 +1659,17 @@ def main(data, outdir, theme='light', style='dark', animation='default'):
         shutil.copy(data, dest_data)
 
     html_content = build_html(data_json, style, animation)
+
+    # 将本地图片内嵌为 base64，使 HTML 成为单文件可分享
+    if embed_images:
+        # 图片相对路径以 data.json 所在目录为基准，但渲染时从 outdir 引用
+        # 优先在 outdir 下查找，其次在 data 文件所在目录下查找
+        html_content = _embed_images_as_base64(html_content, outdir)
+        # 如果 outdir 里没有，再从 data 文件旁边找
+        data_dir = os.path.dirname(os.path.abspath(data))
+        if data_dir != os.path.abspath(outdir):
+            html_content = _embed_images_as_base64(html_content, data_dir)
+
     with open(os.path.join(outdir, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(html_content)
 
@@ -1602,5 +1686,8 @@ if __name__ == "__main__":
                                  'blueprint', 'retro', 'folder', 'receipt', 'scrapbook', 'dossier'])
     parser.add_argument('--animation', type=str, default="default",
                         choices=['minimal', 'stagger', 'poster', 'default'])
+    parser.add_argument('--no-embed-images', action='store_true',
+                        help='不内嵌图片为 base64（保留相对路径引用，HTML 需与 images/ 目录一起分发）')
     args = parser.parse_args()
-    main(data=args.data, outdir=args.outdir, theme=args.theme, style=args.style, animation=args.animation)
+    main(data=args.data, outdir=args.outdir, theme=args.theme, style=args.style,
+         animation=args.animation, embed_images=not args.no_embed_images)

@@ -3,13 +3,41 @@
 OnePage 自检与自修复系统
 在生成网页后，自动进行"结构 + 视觉"的质量检查，并进行自我优化。
 适配 V2 可视化增强模板。
+
+模式说明：
+- 默认模式（OnePage重构）：强制要求结论区/CTA/风险模块
+- Lenient 模式（--lenient）：用户要求保留原文结构时使用，跳过结构性强制检查
 """
 import argparse
 import os
 import re
 
 
-QUALITY_RULES = {
+# 所有模式共用的基础规则
+BASE_RULES = {
+    'module_count': {
+        'name': '模块数量',
+        'check': lambda html: len(re.findall(r'<section\s+class="card\s', html)) <= 8,
+        'weight': 20
+    },
+    'has_visual_hierarchy': {
+        'name': '视觉层级',
+        'check': lambda html: bool(
+            re.search(r'font-weight:\s*[789]00|font-weight:\s*bold', html)
+            or re.search(r'\.metric-value|\.flow-title|\.num\b', html)
+        ),
+        'weight': 20
+    },
+    'appropriate_length': {
+        'name': '内容长度',
+        # 排除 base64 图片数据再计算长度，避免因内嵌图片误判内容过长
+        'check': lambda html: len(re.sub(r'src="data:image[^"]{100,}"', 'src="__img__"', html)) < 80000,
+        'weight': 20
+    }
+}
+
+# 仅在 OnePage 重构模式（非 lenient）下生效的结构规则
+ONEPAGE_RULES = {
     'has_conclusion': {
         'name': '结论优先',
         'check': lambda html: bool(re.search(r'class="conclusion[\s"]', html)),
@@ -27,34 +55,25 @@ QUALITY_RULES = {
         'check': lambda html: bool(re.search(r'sec-risk|risk-level|风险', html)),
         'weight': 15
     },
-    'module_count': {
-        'name': '模块数量',
-        'check': lambda html: len(re.findall(r'<section\s+class="card\s', html)) <= 8,
-        'weight': 15
-    },
-    'has_visual_hierarchy': {
-        'name': '视觉层级',
-        'check': lambda html: bool(
-            re.search(r'font-weight:\s*[789]00|font-weight:\s*bold', html)
-            or re.search(r'\.metric-value|\.flow-title|\.num\b', html)
-        ),
-        'weight': 15
-    },
-    'appropriate_length': {
-        'name': '内容长度',
-        'check': lambda html: len(html) < 80000,
-        'weight': 15
-    }
 }
 
+# 兼容旧代码：默认规则集 = 基础 + OnePage 结构规则
+QUALITY_RULES = {**ONEPAGE_RULES, **BASE_RULES}
 
-def validate_html_structure(html_content):
-    """检查HTML是否符合OnePage设计规范"""
+
+def validate_html_structure(html_content, lenient=False):
+    """检查HTML是否符合OnePage设计规范
+
+    Args:
+        lenient: True 时使用宽松模式（用户保留原文结构），跳过结构性强制检查（结论/CTA/风险）
+    """
     results = []
     total_score = 0
     max_score = 0
 
-    for rule_key, rule in QUALITY_RULES.items():
+    rules = BASE_RULES if lenient else QUALITY_RULES
+
+    for rule_key, rule in rules.items():
         max_score += rule['weight']
         try:
             passed = rule['check'](html_content)
@@ -184,7 +203,7 @@ def apply_fixes(html_content, suggestions):
     return html_content, fixes_applied
 
 
-def main(html_path, output_path=None, auto_fix=False):
+def main(html_path, output_path=None, auto_fix=False, lenient=False):
     if not os.path.exists(html_path):
         print(f"Error: File not found: {html_path}")
         return
@@ -193,10 +212,11 @@ def main(html_path, output_path=None, auto_fix=False):
         html_content = f.read()
 
     print("=" * 50)
-    print("OnePage V2 自检系统")
+    mode_label = "宽松模式（原文结构）" if lenient else "标准模式（OnePage重构）"
+    print(f"OnePage V2 自检系统 [{mode_label}]")
     print("=" * 50)
 
-    validation = validate_html_structure(html_content)
+    validation = validate_html_structure(html_content, lenient=lenient)
 
     print(f"\n质量得分: {validation['score']}/100")
     print(f"通过状态: {'通过' if validation['passed'] else '未通过'}")
@@ -214,6 +234,10 @@ def main(html_path, output_path=None, auto_fix=False):
             fixable = '[可自动修复]' if suggestion.get('auto_fixable') else '[需手动修复]'
             print(f"  {i}. {suggestion['issue']} {fixable}")
             print(f"     -> {suggestion['fix']}")
+
+    if lenient and auto_fix:
+        print("\n[宽松模式] 跳过结构性自动修复（结论/CTA/风险），仅报告视觉问题")
+        auto_fix = False  # 宽松模式下不强制插入 OnePage 专属结构
 
     if auto_fix and suggestions:
         print("\n自动修复中...")
@@ -241,10 +265,13 @@ if __name__ == "__main__":
     parser.add_argument('--html', type=str, required=True, help='HTML文件路径')
     parser.add_argument('--output', type=str, help='输出文件路径')
     parser.add_argument('--auto-fix', action='store_true', help='自动修复问题')
+    parser.add_argument('--lenient', action='store_true',
+                        help='宽松模式：用户保留原文档结构时使用，跳过结论/CTA/风险的强制检查')
 
     args = parser.parse_args()
     main(
         html_path=args.html,
         output_path=args.output,
-        auto_fix=args.auto_fix
+        auto_fix=args.auto_fix,
+        lenient=args.lenient
     )
