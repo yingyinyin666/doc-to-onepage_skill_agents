@@ -127,6 +127,7 @@ argument-hint: [文档路径或URL]
 | `product-tool` | 工具 / 系统建设 |
 | `project-management` | 长周期项目 / 能力建设 |
 | `team-intro` | 团队介绍 / 协作地图 |
+| `personal-review` | 个人述职 / 阶段性总结 |
 
 ## OnePage设计规范
 

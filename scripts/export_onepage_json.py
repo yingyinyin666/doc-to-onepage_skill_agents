@@ -89,7 +89,8 @@ if __name__ == "__main__":
         'holiday-support',
         'product-tool',
         'project-management',
-        'team-intro'
+        'team-intro',
+        'personal-review'
     ], help='Template name')
     parser.add_argument('--output', type=str, default="./output/data.json", help='Output JSON file path')
     

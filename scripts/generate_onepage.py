@@ -78,7 +78,8 @@ if __name__ == "__main__":
         'holiday-support',
         'product-tool',
         'project-management',
-        'team-intro'
+        'team-intro',
+        'personal-review'
     ], help='Template name')
     parser.add_argument('--refs', type=str, default="", help='Comma-separated list of reference documents')
     parser.add_argument('--extra', type=str, default="", help='Path to extra content file')

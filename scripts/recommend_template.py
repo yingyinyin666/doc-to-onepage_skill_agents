@@ -36,6 +36,10 @@ TEMPLATE_KEYWORDS = {
     'team-intro': {
         'keywords': ['团队', '介绍', '职能', '分工', '接口人', '联系人', '协作', '流程', 'FAQ', '地图'],
         'weight': 1.0
+    },
+    'personal-review': {
+        'keywords': ['述职', '个人', '成长', '反思', '自评', '绩效', '复盘', '能力', '季度总结', '半年', '年终', '贡献', 'OKR'],
+        'weight': 1.0
     }
 }
 
@@ -47,7 +51,8 @@ TEMPLATE_SCENARIOS = {
     'holiday-support': '大促 / 节假日保障',
     'product-tool': '工具 / 系统建设',
     'project-management': '长周期项目 / 能力建设',
-    'team-intro': '团队介绍 / 协作地图'
+    'team-intro': '团队介绍 / 协作地图',
+    'personal-review': '个人述职 / 阶段性总结'
 }
 
 def analyze_text(text):

@@ -96,6 +96,7 @@ python3 scripts/generate_onepage.py \
 - `product-tool` - 产品工具型
 - `project-management` - 项目管理型
 - `team-intro` - 团队说明型
+- `personal-review` - 个人述职型
 
 ---
 

@@ -16,6 +16,7 @@
 | `product-tool.lark.md` | 产品工具型 | 工具建设、系统迭代 |
 | `project-management.lark.md` | 项目管理型 | 长周期、能力建设 |
 | `team-intro.lark.md` | 团队说明型 | 团队介绍、协作地图 |
+| `personal-review.lark.md` | 个人述职型 | 个人述职、阶段性总结、绩效回顾 |
 
 ## 各模板结构
 
@@ -143,6 +144,22 @@
 
 ---
 
+### 9. 个人述职型 (personal-review)
+
+```
+核心成果（What I delivered）
+↓
+能力成长（How I grew）
+↓
+反思与不足（What I learned）
+↓
+下阶段规划（Where I'm going）
+```
+
+**必须包含**：量化指标达成率 + 坦诚的反思 + 下阶段目标
+
+---
+
 ## 模板变量
 
 模板中使用 `{{title}}` 作为标题占位符，生成时会自动替换。
@@ -159,3 +176,4 @@
 | 工具系统建设 | product-tool |
 | 长期能力建设 | project-management |
 | 团队介绍 | team-intro |
+| 个人述职/绩效回顾 | personal-review |
