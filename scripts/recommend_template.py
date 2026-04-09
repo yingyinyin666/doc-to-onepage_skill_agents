@@ -40,6 +40,14 @@ TEMPLATE_KEYWORDS = {
     'personal-review': {
         'keywords': ['述职', '个人', '成长', '反思', '自评', '绩效', '复盘', '能力', '季度总结', '半年', '年终', '贡献', 'OKR'],
         'weight': 1.0
+    },
+    'cartoon-brochure': {
+        'keywords': ['宣传', '宣传册', '服务介绍', '服务流程', '扫码', '二维码', '预约', '报名', '旅游', '教育', '活动', '推广', '用户手册', '使用说明', '客服', '群服务', '保障承诺', '联系我们'],
+        'weight': 1.0
+    },
+    'blackboard-notice': {
+        'keywords': ['公告', '通知', '公示', '声明', '紧急通知', '重要通知', '停课', '停工', '放假', '安排', '须知', '注意事项', '规定', '制度', '公示', '告知', '温馨提示', '特此通知', '望周知'],
+        'weight': 1.0
     }
 }
 
@@ -52,7 +60,9 @@ TEMPLATE_SCENARIOS = {
     'product-tool': '工具 / 系统建设',
     'project-management': '长周期项目 / 能力建设',
     'team-intro': '团队介绍 / 协作地图',
-    'personal-review': '个人述职 / 阶段性总结'
+    'personal-review': '个人述职 / 阶段性总结',
+    'cartoon-brochure': '服务/活动宣传册（卡通风）',
+    'blackboard-notice': '公告 / 通知 / 公示（黑板报风）'
 }
 
 def analyze_text(text):

@@ -429,43 +429,74 @@ ACCENT_COLORS = [
 
 # ─────────── 页面构建 ───────────
 
-def build_html(data_json, style='dark', animation='stagger'):
-    title = data_json.get('title', 'OnePage')
-    sections = data_json.get('sections', {})
-
-    sections_html = []
-    section_index = 0
-
-    for sec_title, sec_content in sections.items():
-        content_str = json.dumps(sec_content, ensure_ascii=False) if isinstance(sec_content, dict) else str(sec_content)
-        sec_type = detect_section_type(sec_title, content_str)
-
-        if sec_type == 'conclusion':
-            sections_html.append(_build_conclusion(sec_title, sec_content))
-            continue
-
-        num, clean_title = extract_number_prefix(sec_title)
-        color = ACCENT_COLORS[section_index % len(ACCENT_COLORS)]
-        section_index += 1
-
-        inner = _build_section_content(sec_content, sec_type, color)
-
-        num_html = f'<div class="num" style="--c:{color}">{num}</div>' if num else ''
-        type_cls = f'sec-{sec_type}' if sec_type != 'normal' else ''
-
-        # 章节标题拆分：如果有冒号，分主副标题
-        title_html = _render_section_title(clean_title)
-
-        sections_html.append(f'''
+def _render_card(sec_title, sec_content, sec_type, color):
+    """渲染单个章节卡片，返回 HTML 字符串"""
+    num, clean_title = extract_number_prefix(sec_title)
+    inner = _build_section_content(sec_content, sec_type, color)
+    num_html = f'<div class="num" style="--c:{color}">{num}</div>' if num else ''
+    type_cls = f'sec-{sec_type}' if sec_type != 'normal' else ''
+    title_html = _render_section_title(clean_title)
+    return f'''
         <section class="card fade-in {type_cls}" style="--accent:{color}">
           <div class="card-head">
             {num_html}
             <div class="card-title-wrap">{title_html}</div>
           </div>
           <div class="card-body">{inner}</div>
-        </section>''')
+        </section>'''
 
-    return _full_html(title, '\n'.join(sections_html), style)
+
+def build_html(data_json, style='dark', animation='stagger'):
+    title = data_json.get('title', 'OnePage')
+    sections = data_json.get('sections', {})
+    meta = data_json.get('meta', {})
+
+    # 第一遍：预处理所有章节
+    pending = []   # list of (sec_title, sec_content, sec_type, color)
+    section_index = 0
+    for sec_title, sec_content in sections.items():
+        content_str = json.dumps(sec_content, ensure_ascii=False) if isinstance(sec_content, dict) else str(sec_content)
+        sec_type = detect_section_type(sec_title, content_str)
+        if sec_type == 'conclusion':
+            pending.append(('conclusion', sec_title, sec_content, None, None))
+        else:
+            color = ACCENT_COLORS[section_index % len(ACCENT_COLORS)]
+            section_index += 1
+            pending.append(('card', sec_title, sec_content, sec_type, color))
+
+    # 第二遍：根据轻量规则决定是否双列并排
+    sections_html = []
+    i = 0
+    while i < len(pending):
+        kind = pending[i][0]
+
+        if kind == 'conclusion':
+            _, sec_title, sec_content, _, _ = pending[i]
+            sections_html.append(_build_conclusion(sec_title, sec_content))
+            i += 1
+            continue
+
+        _, sec_title, sec_content, sec_type, color = pending[i]
+
+        # 检查下一个是否也是可并排的普通 card
+        next_pairable = (
+            i + 1 < len(pending)
+            and pending[i + 1][0] == 'card'
+            and _is_pairable_section(sec_content)
+            and _is_pairable_section(pending[i + 1][2])
+        )
+
+        if next_pairable:
+            _, sec_title2, sec_content2, sec_type2, color2 = pending[i + 1]
+            card1 = _render_card(sec_title, sec_content, sec_type, color)
+            card2 = _render_card(sec_title2, sec_content2, sec_type2, color2)
+            sections_html.append(f'<div class="card-pair">{card1}{card2}</div>')
+            i += 2
+        else:
+            sections_html.append(_render_card(sec_title, sec_content, sec_type, color))
+            i += 1
+
+    return _full_html(title, '\n'.join(sections_html), style, meta=meta)
 
 
 def _render_section_title(title):
@@ -480,60 +511,126 @@ def _render_section_title(title):
 
 
 def _build_conclusion(title, content):
+    # 从结构化 dict 中提取 label / content / cta 字段
     if isinstance(content, dict):
-        parts = [md_to_html(v) for v in content.values()]
-        inner = '\n'.join(parts)
+        label_text = content.get('label', '')
+        cta_raw = content.get('cta', '')
+        main_content = content.get('content', '')
+        if not main_content:
+            # 兜底：拼合所有值
+            main_content = '\n'.join(str(v) for k, v in content.items() if k not in ('label', 'cta'))
+        inner = md_to_html(main_content)
     else:
-        inner = md_to_html(content)
+        label_text = ''
+        cta_raw = ''
+        inner = md_to_html(str(content))
+        # 从正文中尝试提取问句 CTA
+        cta_match = re.search(r'\*\*(.*?\?.*?)\*\*', str(content))
+        if cta_match:
+            cta_raw = cta_match.group(1)
+            inner = re.sub(r'<strong>.*?\?.*?</strong>', '', inner)
 
-    # 提取 CTA（加粗的问句）
-    cta_html = ''
-    cta_match = re.search(r'\*\*(.*?\?.*?)\*\*', str(content) if not isinstance(content, dict) else json.dumps(content, ensure_ascii=False))
-    if cta_match:
-        cta_text = cta_match.group(1)
-        cta_html = f'<div class="conclusion-cta">{html_lib.escape(cta_text)}</div>'
-        # 从 inner 中移除已提取的 CTA
-        inner = re.sub(r'<strong>.*?\?.*?</strong>', '', inner)
+    label_html = html_lib.escape(label_text) if label_text else 'KEY TAKEAWAY'
+    cta_html = f'<div class="conclusion-cta">{html_lib.escape(cta_raw)}</div>' if cta_raw else ''
 
     return f'''
     <section class="conclusion fade-in">
-      <div class="conclusion-icon">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="conclusion-hero">
+        <div class="conclusion-left">
+          <div class="conclusion-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="conclusion-label">{label_html}</div>
+        </div>
+        <div class="conclusion-right">
+          <div class="conclusion-content">{inner}</div>
+          {cta_html}
+        </div>
       </div>
-      <div class="conclusion-label">KEY TAKEAWAY</div>
-      <div class="conclusion-content">{inner}</div>
-      {cta_html}
     </section>'''
+
+
+def _is_pairable_section(content):
+    """判断章节是否"轻量"（可与相邻章节并列）"""
+    if not isinstance(content, dict):
+        return True   # 纯字符串内容算轻量
+    n = len(content)
+    if n > 3:
+        return False
+    # 子项内容总字数不超过400字算轻量
+    total = sum(len(str(v)) for v in content.values())
+    return total <= 600
 
 
 def _build_section_content(content, sec_type, color):
     if isinstance(content, dict):
+        items = list(content.items())
+        n = len(items)
         parts = []
-        for sub_title, sub_content in content.items():
+
+        for sub_title, sub_content in items:
             sub_html = _smart_render_content(sub_content, color)
-            # 为 sub card 添加 icon hint
             icon = _pick_sub_icon(sub_title, sec_type)
             parts.append(f'''
             <div class="sub">
               <h3>{icon}<span class="dot" style="background:{color}"></span>{html_lib.escape(sub_title)}</h3>
               <div class="sub-content">{sub_html}</div>
             </div>''')
-        return '\n'.join(parts)
+
+        # 版式：2列 / 3列 / 2×2 网格（无 bento 孤儿问题）
+        if n == 2:
+            layout = 'sub-grid sub-cols-2'
+        elif n == 3:
+            layout = 'sub-grid sub-cols-3'
+        elif n >= 4:
+            layout = 'sub-grid sub-cols-2'   # 干净的 2×N 等高网格
+        else:
+            layout = 'sub-stack'
+
+        return f'<div class="{layout}">{"".join(parts)}</div>'
     return _smart_render_content(content, color)
 
 
 def _pick_sub_icon(title, sec_type):
-    """根据子标题内容选择图标"""
-    # 简单的 keyword → SVG icon 映射
+    """根据子标题内容选择图标 (emoji优先，SVG备用)"""
+    # emoji 映射 — 覆盖高频中文业务关键词
+    emoji_map = [
+        ('目标', '🎯'), ('策略', '🎲'), ('方案', '💡'), ('建议', '💡'),
+        ('保障', '🛡️'), ('预算', '💰'), ('费用', '💰'), ('成本', '💰'),
+        ('人力', '👥'), ('团队', '👥'), ('人员', '👥'), ('FTE', '👥'),
+        ('数据', '📊'), ('指标', '📈'), ('KPI', '📈'), ('增长', '📈'),
+        ('分析', '🔍'), ('调研', '🔍'), ('验证', '✅'), ('达标', '✅'),
+        ('风险', '⚠️'), ('痛点', '⚠️'), ('问题', '⚠️'), ('缺口', '⚠️'),
+        ('计划', '📋'), ('方向', '🧭'), ('路径', '🧭'), ('流程', '🔄'),
+        ('进度', '⏱️'), ('时间', '📅'), ('周期', '📅'), ('排期', '📅'),
+        ('用户', '👤'), ('消费者', '👤'), ('客户', '🤝'),
+        ('产品', '📦'), ('商品', '🛍️'), ('服务', '🔧'),
+        ('技术', '⚙️'), ('系统', '⚙️'), ('智能', '🤖'), ('AI', '🤖'),
+        ('运营', '🚀'), ('营销', '📢'), ('推广', '📢'), ('宣传', '📣'),
+        ('体验', '⭐'), ('满意', '⭐'), ('口碑', '⭐'),
+        ('价格', '💲'), ('赔付', '💸'), ('补偿', '💸'), ('返现', '💸'),
+        ('安全', '🔒'), ('规则', '📜'), ('合规', '📜'), ('法规', '📜'),
+        ('上传', '📤'), ('下载', '📥'), ('文件', '📁'), ('凭证', '📄'),
+        ('通知', '📣'), ('公告', '📌'), ('说明', '📝'), ('激励', '🏆'),
+        ('奖励', '🏆'), ('排名', '🏅'), ('冠军', '🥇'),
+        ('应急', '🚨'), ('预案', '🚨'), ('响应', '🚨'),
+        ('市场', '🏪'), ('行业', '🏭'), ('竞品', '🆚'),
+        ('结论', '✅'), ('核心', '💎'), ('亮点', '✨'), ('关键', '🔑'),
+        ('旅程', '🗺️'), ('旅游', '✈️'), ('酒店', '🏨'), ('餐饮', '🍽️'),
+        ('电影', '🎬'), ('演出', '🎭'), ('活动', '🎉'),
+        ('收益', '💹'), ('增长', '📊'), ('提升', '⬆️'),
+        ('试点', '🧪'), ('实验', '🧪'), ('测试', '🧪'),
+        ('解法', '🔑'), ('优先', '🎯'), ('重点', '🎯'),
+    ]
+    for keyword, emoji in emoji_map:
+        if keyword in title:
+            return f'<span class="sub-emoji">{emoji}</span>'
+
+    # SVG 图标备用（英文/无中文关键词时）
     icons = {
         '市场': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zm6-4a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zm6-3a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>',
         '验证': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>',
-        '试点': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>',
-        '痛点': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>',
         '路径': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M12.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-2.293-2.293a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>',
-        '解法': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 5.757a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464A1 1 0 106.464 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zM5 10a1 1 0 01-1 1H3a1 1 0 110-2h1a1 1 0 011 1zM8 16v-1h4v1a2 2 0 11-4 0zM12 14c.015-.34.208-.646.477-.859a4 4 0 10-4.954 0c.27.213.462.519.476.859h4.002z"/></svg>',
-        '优先': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z"/></svg>',
-        '旅程': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/></svg>',
         '收益': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M12 7a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0V8.414l-4.293 4.293a1 1 0 01-1.414 0L8 10.414l-4.293 4.293a1 1 0 01-1.414-1.414l5-5a1 1 0 011.414 0L11 10.586 14.586 7H12z" clip-rule="evenodd"/></svg>',
         '实验': '<svg class="sub-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7 2a1 1 0 00-.707 1.707L7 4.414v3.758a1 1 0 01-.293.707l-4 4C.816 14.769 2.156 18 4.828 18h10.344c2.672 0 4.012-3.231 2.121-5.121l-4-4A1 1 0 0113 8.172V4.414l.707-.707A1 1 0 0013 2H7zm2 6.172V4h2v4.172a3 3 0 00.879 2.12l1.027 1.028a4 4 0 00-2.171.102l-.47.156a4 4 0 01-2.53 0l-.563-.187 1.116-1.116A3 3 0 009 8.172z" clip-rule="evenodd"/></svg>',
     }
@@ -545,8 +642,15 @@ def _pick_sub_icon(title, sec_type):
 
 # ─────────── 完整 HTML ───────────
 
-def _full_html(title, body, style='dark'):
+def _full_html(title, body, style='dark', meta=None):
+    meta = meta or {}
     esc_title = html_lib.escape(title)
+    # 支持 meta 中自定义 header_tag / footer_text / subtitle
+    header_tag_text = html_lib.escape(meta.get('header_tag', 'ONEPAGE REPORT'))
+    footer_text = html_lib.escape(meta.get('footer_text', 'Generated by OnePage Skill'))
+    subtitle = meta.get('subtitle', '')
+    subtitle_html = f'<p class="header-subtitle">{html_lib.escape(subtitle)}</p>' if subtitle else ''
+
     style_vars = _style_vars(style)
     return f'''<!DOCTYPE html>
 <html lang="zh-CN" data-style="{style}">
@@ -573,8 +677,9 @@ def _full_html(title, body, style='dark'):
   <!-- Header -->
   <header class="header fade-in">
     <div class="header-inner">
-      <p class="header-tag">ONEPAGE REPORT</p>
+      <p class="header-tag">{header_tag_text}</p>
       <h1>{esc_title}</h1>
+      {subtitle_html}
       <div class="header-line"></div>
     </div>
   </header>
@@ -582,7 +687,7 @@ def _full_html(title, body, style='dark'):
   <!-- Content -->
   <main>{body}</main>
 
-  <footer class="footer">Generated by OnePage Skill</footer>
+  <footer class="footer">{footer_text}</footer>
 </div>
 
 <script>
@@ -697,6 +802,26 @@ def _style_vars(style):
             --heading:#111111;
             --radius:4px;
         ''',
+        'cartoon': '''
+            --bg:linear-gradient(180deg,#b3e5fc 0%,#e1f5fe 40%,#fff9c4 100%);
+            --surface:rgba(255,255,255,0.95);
+            --glass:rgba(255,255,255,0.97);
+            --glass-border:rgba(255,255,255,0.6);
+            --glass-hover:rgba(255,255,255,1);
+            --text:#1a2f44; --text-secondary:#3a5a7a; --text-muted:#7aa5c0;
+            --heading:#0d1f2d;
+            --radius:24px;
+        ''',
+        'blackboard': '''
+            --bg:#1c3a28;
+            --surface:rgba(255,255,255,0.05);
+            --glass:rgba(255,255,255,0.06);
+            --glass-border:rgba(255,255,255,0.18);
+            --glass-hover:rgba(255,255,255,0.1);
+            --text:#e8f0e8; --text-secondary:#c8dcc8; --text-muted:#8aac8a;
+            --heading:#f5fff5;
+            --radius:6px;
+        ''',
     }
     return styles.get(style, styles['dark'])
 
@@ -749,10 +874,12 @@ body {
 
 [data-style="light"] .bg-glow, [data-style="corporate"] .bg-glow, [data-style="warm"] .bg-glow,
 [data-style="blueprint"] .bg-glow, [data-style="retro"] .bg-glow, [data-style="folder"] .bg-glow,
-[data-style="receipt"] .bg-glow, [data-style="scrapbook"] .bg-glow, [data-style="dossier"] .bg-glow { display:none; }
+[data-style="receipt"] .bg-glow, [data-style="scrapbook"] .bg-glow, [data-style="dossier"] .bg-glow,
+[data-style="cartoon"] .bg-glow, [data-style="blackboard"] .bg-glow { display:none; }
 [data-style="light"] .bg-grid, [data-style="corporate"] .bg-grid, [data-style="warm"] .bg-grid,
 [data-style="retro"] .bg-grid, [data-style="folder"] .bg-grid, [data-style="receipt"] .bg-grid,
-[data-style="scrapbook"] .bg-grid, [data-style="dossier"] .bg-grid { display:none; }
+[data-style="scrapbook"] .bg-grid, [data-style="dossier"] .bg-grid,
+[data-style="cartoon"] .bg-grid, [data-style="blackboard"] .bg-grid { display:none; }
 
 .wrap { max-width:860px;margin:0 auto;padding:2.5rem 1.25rem 3rem;position:relative;z-index:1; }
 
@@ -793,6 +920,10 @@ body {
   width:56px;height:3px;margin:1.2rem auto 0;border-radius:2px;
   background:linear-gradient(90deg,#4F6AF6,#7C5CFC);
 }
+.header-subtitle {
+  font-size:0.85rem;font-weight:500;color:var(--text-secondary);
+  margin-top:0.6rem;letter-spacing:0.03em;opacity:0.85;
+}
 
 /* ── Conclusion ── */
 .conclusion {
@@ -808,25 +939,31 @@ body {
 }
 .conclusion::before {
   content:'';position:absolute;top:0;left:0;right:0;height:3px;
-  background:linear-gradient(90deg,#4F6AF6,#7C5CFC,#4F6AF6);
+  background:linear-gradient(90deg,#4F6AF6,#7C5CFC,#E8546A,#7C5CFC,#4F6AF6);
+  background-size:200% 100%;
+  animation:bar-slide 6s linear infinite;
+}
+@keyframes bar-slide {
+  0%{background-position:0% 0%} 100%{background-position:200% 0%}
 }
 .conclusion::after {
-  content:'';position:absolute;top:0;right:0;width:200px;height:200px;
-  background:radial-gradient(circle,rgba(79,106,246,0.08) 0%,transparent 70%);
+  content:'';position:absolute;top:0;right:0;width:240px;height:240px;
+  background:radial-gradient(circle,rgba(79,106,246,0.06) 0%,transparent 70%);
   pointer-events:none;
 }
 .conclusion-icon {
-  width:44px;height:44px;border-radius:12px;
-  background:linear-gradient(135deg,rgba(79,106,246,0.15),rgba(124,92,252,0.1));
-  border:1px solid rgba(79,106,246,0.15);
+  width:52px;height:52px;border-radius:14px;
+  background:linear-gradient(135deg,rgba(79,106,246,0.18),rgba(124,92,252,0.12));
+  border:1px solid rgba(79,106,246,0.18);
   display:flex;align-items:center;justify-content:center;
-  margin-bottom:1rem;color:#818cf8;
+  color:#818cf8;flex-shrink:0;
 }
 .conclusion-label {
-  display:inline-block;font-size:0.6rem;font-weight:700;letter-spacing:0.2em;
+  display:inline-block;font-size:0.6rem;font-weight:700;letter-spacing:0.18em;
   color:#818cf8;background:rgba(79,106,246,0.1);
-  padding:0.25rem 0.85rem;border-radius:100px;margin-bottom:1rem;
-  border:1px solid rgba(79,106,246,0.12);
+  padding:0.25rem 0.75rem;border-radius:100px;
+  border:1px solid rgba(79,106,246,0.14);
+  white-space:nowrap;text-align:center;
 }
 .conclusion-content {
   font-size:0.95rem;line-height:1.9;color:var(--text-secondary);
@@ -836,12 +973,11 @@ body {
 [data-style="light"] .conclusion-content strong,
 [data-style="corporate"] .conclusion-content strong { color:#b45309; }
 .conclusion-cta {
-  margin-top:1.25rem;padding:1rem 1.5rem;
+  margin-top:1rem;padding:0.9rem 1.4rem;
   background:linear-gradient(135deg,rgba(79,106,246,0.12),rgba(124,92,252,0.08));
   border:1px solid rgba(79,106,246,0.2);
   border-radius:12px;
-  font-size:1rem;font-weight:700;color:var(--heading);
-  text-align:center;
+  font-size:0.92rem;font-weight:700;color:var(--heading);
   letter-spacing:0.01em;
 }
 [data-style="dark"] .conclusion-cta { color:#f8fafc; }
@@ -852,20 +988,30 @@ body {
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
   margin-bottom: 1.5rem;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  transition: transform 0.4s cubic-bezier(0.22,1,0.36,1), box-shadow 0.4s ease, border-color 0.4s ease;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.04);
+  transition: transform 0.45s cubic-bezier(0.22,1,0.36,1), box-shadow 0.45s ease, border-color 0.3s ease;
   overflow: hidden;
   position: relative;
+  will-change: transform;
 }
 .card::before {
   content:'';position:absolute;top:0;left:0;bottom:0;width:4px;
-  background:var(--accent,#4F6AF6);border-radius:4px 0 0 4px;
+  background:linear-gradient(180deg,var(--accent,#4F6AF6),color-mix(in srgb,var(--accent,#4F6AF6) 60%,transparent));
+  border-radius:4px 0 0 4px;
+  transition: width 0.3s ease;
 }
 .card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 16px 48px rgba(0,0,0,0.2);
+  transform: translateY(-6px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1), 0 24px 64px rgba(0,0,0,0.16);
   border-color: var(--glass-hover);
+}
+.card:hover::before { width: 6px; }
+/* 3D tilt 光泽覆层 */
+.card-shine {
+  position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:10;
+  transition:opacity 0.3s ease;
 }
 
 .card-head {
@@ -896,17 +1042,22 @@ body {
   border-radius: 14px;
   padding: 1.25rem 1.5rem;
   margin-bottom: 0.75rem;
-  transition: background 0.3s ease, border-color 0.3s ease, transform 0.3s ease;
+  transition: all 0.35s cubic-bezier(0.22,1,0.36,1);
+  position: relative;
+  overflow: hidden;
 }
 .sub:hover {
-  background:var(--glass-hover);
-  border-color:rgba(255,255,255,0.12);
-  transform:translateX(4px);
+  background: var(--glass-hover);
+  border-color: rgba(255,255,255,0.14);
+  border-left-color: var(--accent, #4F6AF6);
+  transform: translateX(6px);
+  box-shadow: -3px 0 0 var(--accent, #4F6AF6), 0 4px 20px rgba(0,0,0,0.1);
 }
 [data-style="light"] .sub:hover,
 [data-style="corporate"] .sub:hover,
 [data-style="warm"] .sub:hover {
-  border-color:rgba(0,0,0,0.1);
+  border-color: rgba(0,0,0,0.1);
+  border-left-color: var(--accent, #4F6AF6);
 }
 .sub:last-child { margin-bottom:0; }
 .sub h3 {
@@ -921,12 +1072,101 @@ body {
   width:16px;height:16px;flex-shrink:0;
   color:var(--text-muted);opacity:0.7;
 }
+.sub-emoji {
+  font-size:1.05em;flex-shrink:0;
+  filter:saturate(1.1);
+  line-height:1;
+}
 .dot { width:6px;height:6px;border-radius:50%;flex-shrink:0; }
 .sub-content { font-size:0.85rem;color:var(--text-secondary);line-height:1.8; }
 .sub-content p { margin-bottom:0.4rem; }
 .sub-content p:last-child { margin-bottom:0; }
-.sub-content strong { color:var(--heading);font-weight:600; }
-[data-style="dark"] .sub-content strong { color:#e2e8f0; }
+.sub-content strong { color:var(--heading);font-weight:700; }
+[data-style="dark"] .sub-content strong { color:#f1f5f9;font-weight:700; }
+
+/* ══════════════════════════════════════
+   Sub 多列版式系统（等高 + 整齐）
+   ══════════════════════════════════════ */
+
+/* 通用 grid 容器 — stretch 保证同行等高 */
+.sub-grid {
+  display: grid;
+  gap: 0.75rem;
+  align-items: stretch;    /* ← 关键：同行格子等高 */
+}
+.sub-grid > .sub {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+/* 内容区撑满剩余高度，使短内容的卡片底部对齐 */
+.sub-grid > .sub .sub-content {
+  flex: 1;
+}
+
+/* 2列 */
+.sub-cols-2 { grid-template-columns: repeat(2, 1fr); }
+
+/* 3列 */
+.sub-cols-3 { grid-template-columns: repeat(3, 1fr); }
+
+/* ── 卡片级双列并排 ── */
+.card-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.5rem;    /* 与独立卡片一致的底部间距 */
+  align-items: stretch;
+}
+/* 取消内部卡片自身的底部间距，由 card-pair 统一管理 */
+.card-pair > .card {
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 双列卡片内容撑满，使两张卡高度一致 */
+.card-pair > .card .card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.card-pair > .card .sub-grid,
+.card-pair > .card .sub-stack { flex: 1; }
+
+/* ── 结论区 Hero 两栏布局 ── */
+.conclusion-hero {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+.conclusion-left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+  min-width: 80px;
+  padding-top: 0.2rem;
+}
+.conclusion-right {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 平板：3列退为2列，末尾奇数跨满 */
+@media(max-width:900px) {
+  .sub-cols-3 { grid-template-columns: repeat(2, 1fr); }
+  .sub-cols-3 > .sub:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+
+/* 移动端全退单列 */
+@media(max-width:640px) {
+  .sub-cols-2,
+  .sub-cols-3 { grid-template-columns: 1fr; }
+  .card-pair { grid-template-columns: 1fr; gap: 0; }
+  .conclusion-hero { flex-direction: column; gap: 0.75rem; }
+  .conclusion-left { flex-direction: row; min-width: auto; }
+}
 
 /* ── Metric Cards ── */
 .metric-grid {
@@ -1550,6 +1790,494 @@ code {
 [data-style="dossier"] table { border-radius:4px; }
 [data-style="dossier"] .footer { color:rgba(255,255,255,0.5); }
 
+/* ── 7. Cartoon 卡通宣传册风 ── */
+@keyframes cartoon-bounce {
+  0%,100%{transform:translateY(0) scale(1)}
+  30%{transform:translateY(-14px) scale(1.03)}
+  60%{transform:translateY(-6px) scale(1.01)}
+}
+@keyframes cartoon-float {
+  0%,100%{transform:translateX(0) translateY(0)}
+  50%{transform:translateX(10px) translateY(-6px)}
+}
+
+[data-style="cartoon"] body {
+  background:linear-gradient(180deg,#87ceeb 0%,#b3e5fc 28%,#e1f5fe 55%,#fff9c4 80%,#ffe0b2 100%);
+  min-height:100vh;position:relative;
+}
+/* 云朵漂浮层 */
+[data-style="cartoon"] body::before {
+  content:'';position:fixed;top:28px;left:-30px;z-index:0;pointer-events:none;
+  width:130px;height:60px;background:rgba(255,255,255,0.8);border-radius:60px;
+  box-shadow:
+    55px 12px 0 18px rgba(255,255,255,0.8),
+    28px -14px 0 12px rgba(255,255,255,0.8),
+    580px 10px 0 0 rgba(255,255,255,0.65),
+    620px 25px 0 22px rgba(255,255,255,0.65),
+    655px 5px 0 14px rgba(255,255,255,0.65);
+  animation:cartoon-float 7s ease-in-out infinite;
+}
+[data-style="cartoon"] body::after {
+  content:'';position:fixed;top:110px;right:10px;z-index:0;pointer-events:none;
+  width:100px;height:48px;background:rgba(255,255,255,0.6);border-radius:48px;
+  box-shadow:
+    42px 10px 0 14px rgba(255,255,255,0.6),
+    22px -10px 0 9px rgba(255,255,255,0.6);
+  animation:cartoon-float 9s ease-in-out infinite reverse;
+}
+
+[data-style="cartoon"] .wrap { max-width:820px;position:relative;z-index:1; }
+
+/* 标题栏 — 天蓝横幅 + 厚描边 + 底部 offset 阴影 */
+[data-style="cartoon"] .header {
+  background:linear-gradient(150deg,#29b6f6 0%,#4dd0e1 100%);
+  border:3px solid rgba(0,110,170,0.22);border-radius:28px;
+  box-shadow:0 7px 0 rgba(0,120,180,0.28), 0 14px 36px rgba(41,182,246,0.28);
+  backdrop-filter:none;padding:3rem 2.5rem 2.8rem;position:relative;overflow:visible;
+}
+[data-style="cartoon"] .header::before {
+  content:'☁';position:absolute;top:14px;left:22px;
+  font-size:2.2rem;opacity:0.4;animation:cartoon-float 5s ease-in-out infinite;
+}
+[data-style="cartoon"] .header::after {
+  content:'☁';position:absolute;top:6px;right:28px;
+  font-size:3rem;opacity:0.22;animation:cartoon-float 8s ease-in-out infinite reverse;
+}
+[data-style="cartoon"] .header-tag {
+  color:rgba(255,255,255,0.9);font-size:0.72rem;font-weight:700;letter-spacing:0.18em;
+}
+[data-style="cartoon"] .header h1 {
+  background:none;-webkit-text-fill-color:#fff;font-size:2.6rem;font-weight:900;
+  text-shadow:3px 4px 0 rgba(0,100,160,0.32);letter-spacing:-0.01em;line-height:1.15;
+}
+[data-style="cartoon"] .header-line {
+  background:rgba(255,255,255,0.55);height:5px;border-radius:4px;width:80px;margin-top:1rem;
+}
+
+/* 卡片 — 彩色填充背景 + 厚描边 + offset 阴影 */
+[data-style="cartoon"] .card {
+  border-radius:24px;backdrop-filter:none;overflow:hidden;
+  border:3px solid rgba(0,0,0,0.11);
+  box-shadow:0 7px 0 rgba(0,0,0,0.09), 0 12px 28px rgba(0,0,0,0.07);
+  transition:transform 0.15s ease,box-shadow 0.15s ease;
+}
+[data-style="cartoon"] .card::before { display:none; }
+[data-style="cartoon"] .card:hover {
+  animation:cartoon-bounce 0.45s ease;
+  box-shadow:0 3px 0 rgba(0,0,0,0.08), 0 6px 16px rgba(0,0,0,0.08);
+}
+
+/* 四色轮替彩色背景 */
+[data-style="cartoon"] .card:nth-child(4n+1) { background:#c8e6c9; }
+[data-style="cartoon"] .card:nth-child(4n+2) { background:#fff9c4; }
+[data-style="cartoon"] .card:nth-child(4n+3) { background:#e1bee7; }
+[data-style="cartoon"] .card:nth-child(4n)   { background:#ffe0b2; }
+
+[data-style="cartoon"] .card:nth-child(4n+1) .card-head h2 { color:#2e7d32; }
+[data-style="cartoon"] .card:nth-child(4n+2) .card-head h2 { color:#f57f17; }
+[data-style="cartoon"] .card:nth-child(4n+3) .card-head h2 { color:#6a1b9a; }
+[data-style="cartoon"] .card:nth-child(4n)   .card-head h2 { color:#bf360c; }
+[data-style="cartoon"] .card-head h2 { font-size:1.12rem;font-weight:900; }
+
+/* 子项 — 白色气泡卡片 */
+[data-style="cartoon"] .sub {
+  background:rgba(255,255,255,0.88);
+  border:2px solid rgba(255,255,255,0.65);border-radius:18px;
+  box-shadow:0 2px 8px rgba(0,0,0,0.06);
+}
+[data-style="cartoon"] .sub:hover {
+  background:rgba(255,255,255,0.97);border-color:rgba(255,255,255,0.9);
+  transform:translateY(-2px);box-shadow:0 5px 16px rgba(0,0,0,0.1);
+}
+[data-style="cartoon"] .sub h3 { font-weight:800;color:#1a2f44; }
+[data-style="cartoon"] .sub-content { color:#3a5a7a; }
+[data-style="cartoon"] .sub-content strong { color:#0277bd;font-weight:800; }
+
+/* 序号圆圈 — 厚描边 + 下压阴影 */
+[data-style="cartoon"] .num {
+  border-radius:50%;width:44px;height:44px;font-size:1rem;font-weight:900;
+  border:3px solid rgba(0,0,0,0.14);box-shadow:0 3px 0 rgba(0,0,0,0.14);flex-shrink:0;
+}
+[data-style="cartoon"] .card:nth-child(4n+1) .num { background:#43a047;color:#fff; }
+[data-style="cartoon"] .card:nth-child(4n+2) .num { background:#ffc107;color:#5d4037; }
+[data-style="cartoon"] .card:nth-child(4n+3) .num { background:#8e24aa;color:#fff; }
+[data-style="cartoon"] .card:nth-child(4n)   .num { background:#f4511e;color:#fff; }
+
+/* 结论区 — 暖黄贴纸感 */
+[data-style="cartoon"] .conclusion {
+  background:#fff8e1;border:3px solid #ffc400;border-radius:24px;backdrop-filter:none;
+  box-shadow:0 7px 0 rgba(200,145,0,0.22), 0 14px 30px rgba(255,196,0,0.16);
+}
+[data-style="cartoon"] .conclusion::before {
+  background:linear-gradient(90deg,#ffc400,#ff6d00,#ffc400);height:4px;
+}
+[data-style="cartoon"] .conclusion::after { display:none; }
+[data-style="cartoon"] .conclusion-icon {
+  background:linear-gradient(135deg,#ffca28,#ff8f00);
+  box-shadow:0 3px 0 rgba(160,95,0,0.28);
+}
+[data-style="cartoon"] .conclusion-label {
+  color:#e65100;background:rgba(255,196,0,0.16);
+  border-color:rgba(255,152,0,0.28);font-weight:800;border-radius:10px;
+}
+[data-style="cartoon"] .conclusion-content strong { color:#d84315;font-weight:900; }
+[data-style="cartoon"] .conclusion-cta {
+  background:linear-gradient(135deg,#ffc400,#ff9800);
+  border:3px solid rgba(155,95,0,0.18);border-radius:16px;color:#3e2723;font-weight:900;
+  box-shadow:0 4px 0 rgba(155,95,0,0.28);letter-spacing:0.03em;
+}
+
+/* Metric 卡片 */
+[data-style="cartoon"] .metric-card {
+  border-radius:20px;border:3px solid rgba(0,0,0,0.09);
+  box-shadow:0 4px 0 rgba(0,0,0,0.09);overflow:hidden;
+}
+[data-style="cartoon"] .metric-card::before { height:6px;border-radius:0; }
+[data-style="cartoon"] .metric-card:nth-child(4n+1)::before { background:#43a047; }
+[data-style="cartoon"] .metric-card:nth-child(4n+2)::before { background:#ffc107; }
+[data-style="cartoon"] .metric-card:nth-child(4n+3)::before { background:#8e24aa; }
+[data-style="cartoon"] .metric-card:nth-child(4n)::before   { background:#f4511e; }
+[data-style="cartoon"] .metric-value { font-weight:900; }
+
+/* 流程 / 表格 */
+[data-style="cartoon"] .flow-content { border-radius:18px;border:2px solid rgba(255,255,255,0.55); }
+[data-style="cartoon"] .flow-node { border:3px solid rgba(0,0,0,0.1);box-shadow:0 3px 0 rgba(0,0,0,0.09); }
+[data-style="cartoon"] table { border-radius:18px;border:3px solid rgba(0,0,0,0.08);overflow:hidden; }
+[data-style="cartoon"] th { background:linear-gradient(90deg,#e1f5fe,#f3e5f5);font-weight:900;letter-spacing:0.06em; }
+
+[data-style="cartoon"] .priority-badge { border-radius:20px;font-weight:800;border-width:2px; }
+[data-style="cartoon"] .footer { color:#7aa5c0;font-weight:600; }
+
+/* ── 8. Blackboard 黑板报风 ── */
+@keyframes chalk-flicker {
+  0%,100%{opacity:1} 92%{opacity:1} 94%{opacity:0.88} 96%{opacity:1}
+}
+
+[data-style="blackboard"] body {
+  background:#1c3a28;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  min-height:100vh;
+  /* 可读性：深色背景行高提升 */
+  line-height:1.78;
+}
+/* 黑板外框暗角 */
+[data-style="blackboard"] body::before {
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  box-shadow:inset 0 0 60px rgba(0,0,0,0.55), inset 0 0 120px rgba(0,0,0,0.25);
+}
+[data-style="blackboard"] .wrap { max-width:820px;position:relative;z-index:1; }
+
+/* ── 标题区 ── */
+[data-style="blackboard"] .header {
+  background:transparent;border:none;border-radius:6px;backdrop-filter:none;
+  padding:3.2rem 2.5rem 2.8rem;position:relative;
+  border-top:3px solid rgba(255,255,255,0.35);
+  border-bottom:3px solid rgba(255,255,255,0.35);
+}
+[data-style="blackboard"] .header::before {
+  content:'';position:absolute;top:6px;left:6px;right:6px;bottom:6px;
+  border:2px dashed rgba(255,255,255,0.18);border-radius:4px;pointer-events:none;
+}
+/* ★ 公 告 栏 ★ 标签 */
+[data-style="blackboard"] .header::after {
+  content:'★ 公 告 栏 ★';
+  position:absolute;top:-14px;left:50%;transform:translateX(-50%);
+  background:#1c3a28;padding:0 12px;
+  font-size:0.72rem;font-weight:700;letter-spacing:0.35em;
+  color:rgba(255,220,80,0.9);white-space:nowrap;
+}
+/* header-tag：隐藏默认 ONEPAGE REPORT，data里可通过 meta.header_tag 覆盖 */
+[data-style="blackboard"] .header-tag {
+  font-size:0;opacity:0;height:0;margin:0;padding:0;overflow:hidden;
+}
+[data-style="blackboard"] .header h1 {
+  background:none;-webkit-text-fill-color:#f5fff5;
+  font-size:clamp(1.8rem,4vw,2.6rem);font-weight:900;letter-spacing:0.05em;
+  text-shadow:2px 2px 0 rgba(255,255,255,0.08),0 0 30px rgba(180,255,180,0.15);
+  animation:chalk-flicker 8s ease-in-out infinite;line-height:1.25;
+}
+/* 副标题 */
+[data-style="blackboard"] .header-subtitle {
+  color:rgba(200,230,200,0.75);font-size:0.82rem;font-weight:500;
+  letter-spacing:0.12em;margin-top:0.5rem;
+}
+[data-style="blackboard"] .header-line {
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.4),transparent);
+  height:2px;width:100%;margin-top:1.2rem;border-radius:0;
+}
+
+/* ── 卡片 — 粉笔描边，功能色竖线 ── */
+[data-style="blackboard"] .card {
+  background:rgba(255,255,255,0.045);
+  border:2px solid rgba(255,255,255,0.22);
+  border-radius:6px;backdrop-filter:none;box-shadow:none;position:relative;
+}
+[data-style="blackboard"] .card::before { display:none; }
+/* 功能色语义：左竖线 绿=正向 黄=激励 蓝=操作 红=警示 */
+[data-style="blackboard"] .card:nth-child(4n+1) { border-left:4px solid rgba(100,210,130,0.75); }
+[data-style="blackboard"] .card:nth-child(4n+2) { border-left:4px solid rgba(255,200,60,0.75); }
+[data-style="blackboard"] .card:nth-child(4n+3) { border-left:4px solid rgba(80,180,255,0.75); }
+[data-style="blackboard"] .card:nth-child(4n)   { border-left:4px solid rgba(255,110,90,0.75); }
+[data-style="blackboard"] .card:hover {
+  background:rgba(255,255,255,0.07);border-color:rgba(255,255,255,0.38);
+  transform:none;box-shadow:none;
+}
+[data-style="blackboard"] .card-head {
+  border-bottom:1px dashed rgba(255,255,255,0.18);
+  padding-bottom:0.9rem;
+}
+[data-style="blackboard"] .card-head h2 {
+  /* 模块大标题：粉笔白，字号明显大于子项 */
+  color:#f5fff5;font-size:1.18rem;font-weight:900;letter-spacing:0.07em;
+}
+
+/* ── 序号圆圈 ── */
+[data-style="blackboard"] .num {
+  border-radius:50%;width:40px;height:40px;font-size:0.9rem;font-weight:900;
+  background:transparent;border:2px solid rgba(255,255,255,0.5);
+  color:#f5fff5;box-shadow:none;flex-shrink:0;
+}
+[data-style="blackboard"] .card:nth-child(4n+1) .num { border-color:rgba(100,210,130,0.85);color:rgba(140,230,160,1); }
+[data-style="blackboard"] .card:nth-child(4n+2) .num { border-color:rgba(255,200,60,0.85);color:rgba(255,220,100,1); }
+[data-style="blackboard"] .card:nth-child(4n+3) .num { border-color:rgba(80,180,255,0.85);color:rgba(130,200,255,1); }
+[data-style="blackboard"] .card:nth-child(4n)   .num { border-color:rgba(255,110,90,0.85);color:rgba(255,150,140,1); }
+
+/* ── 子项卡片（卡片化替代横线）── */
+[data-style="blackboard"] .sub {
+  /* 轻微透明底，区隔靠背景+内边距，不用细横线 */
+  background:rgba(255,255,255,0.05);
+  border:1px solid rgba(255,255,255,0.14);border-radius:5px;
+  /* 段落间距加大，增加呼吸感 */
+  padding:1rem 1.15rem;
+}
+[data-style="blackboard"] .sub:hover {
+  background:rgba(255,255,255,0.09);border-color:rgba(255,255,255,0.28);transform:none;
+}
+/* 子项标题：结论前置，字号清晰与正文拉开 */
+[data-style="blackboard"] .sub h3 {
+  color:#d8f0d8;font-weight:800;letter-spacing:0.05em;font-size:0.95rem;
+}
+/* 正文：对比度满足 WCAG 4.5:1（#d0e8d0 在 #1c3a28 背景上约 6.5:1） */
+[data-style="blackboard"] .sub-content { color:#d0e8d0;line-height:1.8; }
+/* 高亮：只高亮关键词/数字，不整行高亮 */
+[data-style="blackboard"] .sub-content strong { color:#ffe066;font-weight:800; }
+[data-style="blackboard"] .sub-content em { color:#86e0b0;font-style:normal;font-weight:600; }
+/* 列表：行距加大 */
+[data-style="blackboard"] .sub-content li { margin-bottom:0.35rem; }
+
+/* ── 警示条：橙色（风险/注意事项）── */
+[data-style="blackboard"] .sec-risk .card,
+[data-style="blackboard"] .card:nth-child(4n) {
+  border-left-color:rgba(255,140,60,0.8);
+}
+[data-style="blackboard"] .sec-risk .sub,
+[data-style="blackboard"] .card:nth-child(4n) .sub {
+  background:rgba(255,130,50,0.07);border-color:rgba(255,130,50,0.2);
+}
+
+/* ── 结论区 — 醒目红色公告框 ── */
+[data-style="blackboard"] .conclusion {
+  background:rgba(200,30,30,0.12);
+  border:2px solid rgba(255,100,100,0.5);border-radius:6px;backdrop-filter:none;
+  position:relative;
+}
+[data-style="blackboard"] .conclusion::before {
+  background:linear-gradient(90deg,rgba(255,100,100,0.6),rgba(255,180,80,0.6),rgba(255,100,100,0.6));
+  height:3px;
+}
+[data-style="blackboard"] .conclusion::after { display:none; }
+[data-style="blackboard"] .conclusion-icon {
+  background:rgba(255,100,100,0.25);border:2px solid rgba(255,100,100,0.5);box-shadow:none;
+}
+[data-style="blackboard"] .conclusion-label {
+  color:#ff8888;background:rgba(255,80,80,0.14);border-color:rgba(255,80,80,0.3);
+  font-weight:800;letter-spacing:0.08em;
+}
+[data-style="blackboard"] .conclusion-content strong { color:#ffcc44;font-weight:900; }
+[data-style="blackboard"] .conclusion-cta {
+  background:rgba(255,220,80,0.14);border:2px solid rgba(255,220,80,0.5);
+  border-radius:4px;color:#ffe580;font-weight:800;letter-spacing:0.06em;box-shadow:none;
+}
+
+/* ── Metric 卡片 ── */
+[data-style="blackboard"] .metric-card {
+  background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.18);
+  border-radius:6px;box-shadow:none;
+}
+[data-style="blackboard"] .metric-card::before { height:3px; }
+[data-style="blackboard"] .metric-card:nth-child(4n+1)::before { background:rgba(100,210,130,0.8); }
+[data-style="blackboard"] .metric-card:nth-child(4n+2)::before { background:rgba(255,200,60,0.8); }
+[data-style="blackboard"] .metric-card:nth-child(4n+3)::before { background:rgba(80,180,255,0.8); }
+[data-style="blackboard"] .metric-card:nth-child(4n)::before   { background:rgba(255,110,90,0.8); }
+[data-style="blackboard"] .metric-value {
+  font-weight:900;background:none;-webkit-text-fill-color:#f5fff5;
+}
+
+/* ── 流程步骤（操作指引） ── */
+[data-style="blackboard"] .flow-content {
+  background:rgba(80,180,255,0.06);border-radius:4px;
+  border:1px dashed rgba(80,180,255,0.3);  /* 蓝色=操作 */
+}
+[data-style="blackboard"] .flow-title { color:#90d0ff;font-weight:700; }
+[data-style="blackboard"] .flow-node { border:2px solid rgba(80,180,255,0.45); }
+
+/* ── 表格 ── */
+[data-style="blackboard"] table {
+  border-radius:4px;border:2px solid rgba(255,255,255,0.18);overflow:hidden;
+}
+[data-style="blackboard"] th {
+  background:rgba(255,255,255,0.1);color:#f5fff5;font-weight:800;letter-spacing:0.1em;
+  border-bottom:2px solid rgba(255,255,255,0.22);
+}
+[data-style="blackboard"] td { border-color:rgba(255,255,255,0.09);color:#d0e8d0; }
+[data-style="blackboard"] td strong { color:#ffe066;font-weight:700; }
+
+/* ── Badge ── */
+[data-style="blackboard"] .badge-p00 { background:rgba(255,80,80,0.2);color:#ff8888;border-color:rgba(255,80,80,0.35); }
+[data-style="blackboard"] .badge-p0  { background:rgba(255,140,60,0.2);color:#ffaa70;border-color:rgba(255,140,60,0.35); }
+[data-style="blackboard"] .badge-p1  { background:rgba(255,220,80,0.2);color:#ffe060;border-color:rgba(255,220,80,0.35); }
+[data-style="blackboard"] .priority-badge { border-radius:4px;font-weight:700;letter-spacing:0.06em; }
+
+/* ── 移动端适配（正文≥12px，标题≥16px）── */
+@media(max-width:640px) {
+  [data-style="blackboard"] .header h1 { font-size:1.6rem; }
+  [data-style="blackboard"] .card-head h2 { font-size:1rem; }
+  [data-style="blackboard"] .sub-content { font-size:0.88rem;line-height:1.75; }
+  [data-style="blackboard"] .sub h3 { font-size:0.88rem; }
+  [data-style="blackboard"] .wrap { padding:1.2rem 0.85rem 2rem; }
+  [data-style="blackboard"] .sub { padding:0.85rem 0.9rem; }
+}
+
+[data-style="blackboard"] .footer { color:#5a8a5a;letter-spacing:0.1em;font-size:0.68rem; }
+
+/* ── Custom Scrollbar ── */
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--text-muted);border-radius:3px;opacity:0.4}
+::-webkit-scrollbar-thumb:hover{background:var(--text-secondary)}
+
+/* ── Inline Progress Bar (for % in bold text) ── */
+.inline-progress {
+  display:inline-block;width:56px;height:4px;border-radius:2px;
+  background:rgba(128,128,128,0.2);vertical-align:middle;margin-left:7px;overflow:hidden;
+  position:relative;top:-1px;flex-shrink:0;
+}
+.inline-bar {
+  display:block;height:100%;width:0%;border-radius:2px;
+  background:var(--accent,#4F6AF6);
+  transition:width 1s cubic-bezier(0.22,1,0.36,1);
+}
+
+/* ── Dark Theme Enhanced Cards ── */
+[data-style="dark"] .card {
+  background:linear-gradient(145deg,rgba(255,255,255,0.07) 0%,rgba(255,255,255,0.04) 100%);
+  box-shadow:0 1px 0 rgba(255,255,255,0.05) inset,0 2px 12px rgba(0,0,0,0.2),0 8px 32px rgba(0,0,0,0.12);
+}
+[data-style="dark"] .card:hover {
+  background:linear-gradient(145deg,rgba(255,255,255,0.09) 0%,rgba(255,255,255,0.06) 100%);
+  box-shadow:0 1px 0 rgba(255,255,255,0.08) inset,
+             0 4px 12px rgba(0,0,0,0.25),
+             0 24px 64px rgba(0,0,0,0.3),
+             0 0 0 1px rgba(255,255,255,0.05);
+}
+[data-style="dark"] .sub { background:rgba(255,255,255,0.04); }
+[data-style="dark"] .sub:hover { background:rgba(255,255,255,0.07); }
+[data-style="dark"] .conclusion {
+  background:linear-gradient(135deg,rgba(79,106,246,0.09) 0%,rgba(124,92,252,0.05) 100%);
+  border-color:rgba(79,106,246,0.3);
+}
+[data-style="dark"] .conclusion:hover {
+  background:linear-gradient(135deg,rgba(79,106,246,0.12) 0%,rgba(124,92,252,0.08) 100%);
+}
+
+/* ── Dark Header Animated Gradient Title ── */
+@keyframes header-gradient-shift {
+  0%,100%{background-position:0% 50%} 50%{background-position:100% 50%}
+}
+[data-style="dark"] .header h1 {
+  background:linear-gradient(135deg,#f8fafc 0%,#c7d2fe 35%,#818cf8 65%,#a78bfa 100%);
+  background-size:250% 250%;
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  animation:header-gradient-shift 10s ease infinite;
+}
+
+/* ── Better Flow Timeline ── */
+.flow-timeline::before {
+  background:linear-gradient(180deg,var(--accent,#4F6AF6) 0%,rgba(128,128,128,0.2) 100%);
+}
+.flow-node {
+  position:relative;
+}
+.flow-node::after {
+  content:'';position:absolute;inset:-4px;border-radius:50%;
+  border:2px solid var(--fc,#4F6AF6);opacity:0;
+  transition:opacity 0.3s ease, transform 0.3s ease;
+  transform:scale(0.8);
+}
+.flow-step:hover .flow-node::after {
+  opacity:0.5;transform:scale(1);
+}
+.flow-content:hover {
+  transform:translateX(6px);
+  border-color:var(--accent,#4F6AF6);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+}
+
+/* ── Better Metric Cards ── */
+.metric-card {
+  position:relative;overflow:hidden;
+}
+.metric-card::after {
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse at 50% 0%,rgba(255,255,255,0.06) 0%,transparent 70%);
+  pointer-events:none;
+}
+.metric-card:hover .metric-value {
+  transform:scale(1.05);
+  transition:transform 0.3s cubic-bezier(0.22,1,0.36,1);
+}
+.metric-value { transition:transform 0.3s ease; }
+
+/* ── Conclusion Pulse Animation ── */
+@keyframes conclusion-pulse {
+  0%,100%{box-shadow:0 0 0 0 rgba(79,106,246,0.15),0 8px 32px rgba(0,0,0,0.1)}
+  50%{box-shadow:0 0 0 8px rgba(79,106,246,0),0 8px 32px rgba(0,0,0,0.1)}
+}
+.conclusion { animation:conclusion-pulse 4s ease-in-out infinite; }
+[data-style="cartoon"] .conclusion { animation:none; }
+[data-style="blackboard"] .conclusion { animation:none; }
+[data-style="retro"] .conclusion { animation:none; }
+
+/* ── Section Type Enhanced Colors ── */
+.sec-risk { border-top: none; }
+[data-style="dark"] .sec-risk {
+  background:linear-gradient(145deg,rgba(232,84,106,0.06) 0%,rgba(255,255,255,0.04) 100%);
+}
+[data-style="dark"] .sec-cta {
+  background:linear-gradient(145deg,rgba(79,106,246,0.07) 0%,rgba(124,92,252,0.04) 100%);
+}
+[data-style="dark"] .sec-metrics {
+  background:linear-gradient(145deg,rgba(45,184,127,0.06) 0%,rgba(255,255,255,0.04) 100%);
+}
+[data-style="dark"] .sec-value {
+  background:linear-gradient(145deg,rgba(245,158,66,0.06) 0%,rgba(255,255,255,0.04) 100%);
+}
+
+/* ── Journey Card Enhanced ── */
+.journey-card:hover {
+  transform:translateX(6px);
+  border-left-width:4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+}
+.journey-dot {
+  transition:transform 0.3s ease, box-shadow 0.3s ease;
+}
+.journey-stage:hover .journey-dot {
+  transform:scale(1.4);
+  box-shadow:0 0 0 6px var(--bg),0 0 0 8px var(--jc,#4F6AF6);
+}
+
 /* ── Print ── */
 @media print {
   body{background:#fff;color:#1a1a2e}
@@ -1572,47 +2300,115 @@ code {
 
 
 def _js():
-    return '''
+    return r'''
 document.addEventListener('DOMContentLoaded',function(){
+
+  // ── 1. Stagger fade-in (交错滑入) ──
   var els=document.querySelectorAll('.fade-in');
-  var observer=new IntersectionObserver(function(entries){
+  var ioFade=new IntersectionObserver(function(entries){
     entries.forEach(function(e){
       if(e.isIntersecting){
         var idx=Array.from(els).indexOf(e.target);
         e.target.style.transitionDelay=(idx*0.08)+'s';
         e.target.classList.add('visible');
-        observer.unobserve(e.target);
+        ioFade.unobserve(e.target);
       }
     });
   },{threshold:0.05,rootMargin:'0px 0px -60px 0px'});
-  els.forEach(function(el){observer.observe(el)});
+  els.forEach(function(el){ioFade.observe(el)});
 
-  // 为 metric 卡片添加数字动画
+  // ── 2. Metric 数字滚动动画 ──
   document.querySelectorAll('.metric-value').forEach(function(el){
     var text=el.textContent;
-    var match=text.match(/([\\d.]+)(%?)/);
+    var match=text.match(/([\d.]+)(%?)/);
     if(!match) return;
     var target=parseFloat(match[1]);
     var suffix=match[2];
-    var duration=800;
-    var start=performance.now();
+    var duration=900;
+    var startTime=null;
     el.textContent='0'+suffix;
-
-    var obs=new IntersectionObserver(function(entries){
+    var ioNum=new IntersectionObserver(function(entries){
       if(entries[0].isIntersecting){
-        obs.unobserve(el);
+        ioNum.unobserve(el);
+        startTime=performance.now();
         requestAnimationFrame(function animate(now){
-          var progress=Math.min((now-start)/duration,1);
+          var progress=Math.min((now-startTime)/duration,1);
           var eased=1-Math.pow(1-progress,3);
           var current=target*eased;
           el.textContent=(target%1===0?Math.round(current):current.toFixed(1))+suffix;
           if(progress<1) requestAnimationFrame(animate);
         });
-        start=performance.now();
       }
     },{threshold:0.5});
-    obs.observe(el);
+    ioNum.observe(el);
   });
+
+  // ── 3. 卡片 3D 倾斜效果 ──
+  var dStyle=document.documentElement.getAttribute('data-style');
+  var tiltStyles=['dark','light','corporate','warm','folder'];
+  if(tiltStyles.indexOf(dStyle)>-1){
+    document.querySelectorAll('.card,.conclusion').forEach(function(card){
+      // 注入光泽层
+      var shine=document.createElement('div');
+      shine.className='card-shine';
+      card.appendChild(shine);
+
+      card.addEventListener('mousemove',function(e){
+        var r=card.getBoundingClientRect();
+        var x=(e.clientX-r.left)/r.width-0.5;
+        var y=(e.clientY-r.top)/r.height-0.5;
+        var rx=(-y*4).toFixed(2);
+        var ry=(x*4).toFixed(2);
+        card.style.transform='perspective(1000px) rotateX('+rx+'deg) rotateY('+ry+'deg) translateY(-6px)';
+        card.style.transition='transform 0.1s ease';
+        // 光泽随鼠标移动
+        var lx=((e.clientX-r.left)/r.width*100).toFixed(1);
+        var ly=((e.clientY-r.top)/r.height*100).toFixed(1);
+        shine.style.background='radial-gradient(circle at '+lx+'% '+ly+'%,rgba(255,255,255,0.1) 0%,transparent 55%)';
+      });
+      card.addEventListener('mouseleave',function(){
+        card.style.transform='';
+        card.style.transition='transform 0.5s cubic-bezier(0.22,1,0.36,1)';
+        shine.style.background='';
+      });
+    });
+  }
+
+  // ── 4. 自动为加粗百分比生成内联进度条 ──
+  document.querySelectorAll('.sub-content p,.sub-content li').forEach(function(el){
+    if(el.querySelector('.inline-progress')) return;
+    el.innerHTML=el.innerHTML.replace(/(<strong>)(\d{1,3}(?:\.\d+)?%?)(<\/strong>)/g,function(m,open,val,close){
+      var num=parseFloat(val);
+      if(isNaN(num)||num<5||!val.match(/%$/)) return m;
+      var pct=Math.min(num,100);
+      return open+val+close+'<span class="inline-progress"><span class="inline-bar" data-w="'+pct+'"></span></span>';
+    });
+  });
+  // 进度条入场动画
+  var ioBar=new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){
+        var b=e.target;
+        var w=b.getAttribute('data-w');
+        setTimeout(function(){b.style.width=w+'%';},150);
+        ioBar.unobserve(b);
+      }
+    });
+  },{threshold:0.3});
+  document.querySelectorAll('.inline-bar').forEach(function(b){ioBar.observe(b);});
+
+  // ── 5. 背景 Glow 视差 (仅 dark) ──
+  if(dStyle==='dark'){
+    var glows=document.querySelectorAll('.bg-glow');
+    window.addEventListener('scroll',function(){
+      var sy=window.scrollY;
+      glows.forEach(function(g,i){
+        var factor=(i%2===0?0.06:-0.04);
+        g.style.transform='translate(0,'+(sy*factor)+'px)';
+      });
+    },{passive:true});
+  }
+
 });
 '''
 
@@ -1683,7 +2479,8 @@ if __name__ == "__main__":
     parser.add_argument('--theme', type=str, default="light", choices=['light', 'poster'])
     parser.add_argument('--style', type=str, default="dark",
                         choices=['dark', 'light', 'corporate', 'warm',
-                                 'blueprint', 'retro', 'folder', 'receipt', 'scrapbook', 'dossier'])
+                                 'blueprint', 'retro', 'folder', 'receipt', 'scrapbook', 'dossier',
+                                 'cartoon', 'blackboard'])
     parser.add_argument('--animation', type=str, default="default",
                         choices=['minimal', 'stagger', 'poster', 'default'])
     parser.add_argument('--no-embed-images', action='store_true',
